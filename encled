@@ -1,73 +1,123 @@
-#!/usr/bin/python
-import os
-import sys
-
-HELP = """
-
-    encled - utility to change fault/location led for supermicro/LSI backplanes
-
-    Usage:
-
-    encled (without options) - display all slots devices status and disk letter
-    encled enclosure/slot - display status of requested device
-    encled enclosure/slot fault - set led indicator to 'faulty'
-                          this WILL NOT make device faulty, just set
-                          enclosure led to 'FAULTY' status.
-    encled enclosure/slot locate - set led indicator to 'locate' status
-    encled enclosure/slot off - turn of faulty/locate status
-    encled device locate/fault/off will work with sd device (sda, sde)
-
-    encled ALL off
-    encled ALL fault
-    encled ALL locate - turn all devices to that status (note CAPS ALL)
-
-    examples:
-        encled 4:0:1:0/12 - show status for enclosure 4:0:1:0 slot 12
-        encled ALL off - disable all indication for all slots in all enclosures
-        encled 5:0:24:0/24 fault - set fault indicator for enclosure 5:0:24:0 slot 24
-        encled 5:0:24:0/12 locate - set location indicator for enclosure 5:0:24:0 slot 12
-    encled sda locate - enable 'locate' for slot with sda block device
-    encled /dev/sdbz fault - enable fault indicator slot with sdbz block device
+#!/usr/bin/env python3
 """
+encled - utility to change fault/location led for supermicro/LSI backplanes
+"""
+import argparse
+import logging
+import subprocess
+import re
+import os
+import numpy
 
 CLASS = '/sys/class/enclosure/'
 SLOT = 'Slot '  # with space
 
-
-def enc_list():
-    '''
-        return list of all enclosure in system
-    '''
-    return os.listdir(CLASS)
-
-
-def slot_list(enc):
-    '''
-        return list of all slots for given enclosure
-        list will contain numbers, not strings
-    '''
-    slot_list = []
-    for elem in os.listdir(os.path.join(CLASS, enc)):
-        slot = os.path.join(CLASS, enc, elem)
-        if os.path.isdir(slot) and not os.path.islink(slot) and os.path.isfile(os.path.join(slot, 'type')):
-            slot_list.append(elem)
-        else:
-            try:
-                slot_list.append(int(elem))  # naming type '001', only numbers pass
-            except ValueError:
-                pass
-    return slot_list
+# define layouts for enclosures
+enclosure_layouts = {"sm24": numpy.array([[6, 12, 18, 24],
+                                          [5, 11, 17, 23],
+                                          [4, 10, 16, 22],
+                                          [3, 9, 15, 21],
+                                          [2, 8, 14, 20],
+                                          [1, 7, 13, 19]]),
+                     "sm44": numpy.array([[6, 12, 18, 24],
+                                          [5, 11, 17, 23],
+                                          [4, 10, 16, 22],
+                                          [3, 9, 15, 21],
+                                          [2, 8, 14, 20],
+                                          [1, 7, 13, 19],
+                                          [0, 32, 38, 44],
+                                          [0, 31, 37, 43],
+                                          [0, 30, 36, 42],
+                                          [0, 29, 35, 41],
+                                          [26, 28, 34, 40],
+                                          [25, 27, 33, 39]])}
 
 
-def find_name(enc, slot):
-    '''
-        Attempt to denormalize given slot number
-        for enclosure enc
-        1-> 01 or 1->001, 1->0001 or 1->00001
-        first mach wins
-        return full path to slot (with CLASS)
-        or None
-    '''
+def error(text):
+    """
+    cancel the operation and exit
+    :param text:
+    :return:
+    """
+    logging.error(text)
+    exit(-1)
+
+
+def scan_system():
+    """
+    use lsscsi, sg_ses to get an overview of the system
+    :return:
+    """
+    # first step: use lsscsi to find all enclosures
+    enclosures = {}
+    sts, out = subprocess.getstatusoutput("lsscsi -g")
+    if sts != 0:
+        error("unable to list scsi devices!")
+    for line in out.splitlines():
+        words = line.split()
+        if words[1] == "enclosu":
+            enclosures[words[-1]] = {"scsi_tuple": words[0][1:-1]}
+
+    # create a mapping between the /dev/sd* devices and sas addresses
+    sas_dev_sd = {}
+    dev_sd_scsi = {}
+    sts, out = subprocess.getstatusoutput("lsscsi -t -i")
+    if sts != 0:
+        error("unable to list scsi devices!")
+    for line in out.splitlines():
+        words = line.split()
+        if words[1] == "disk" and words[2].startswith("sas:"):
+            sas_dev_sd[words[2].replace("sas:", "")] = words[-2]
+            dev_sd_scsi[words[-2]] = words[-1]
+
+    # loop over all enclosures to find all connected devices
+    for one_enclosure in enclosures.keys():
+        sts, out = subprocess.getstatusoutput("sg_ses -p 0xa %s" % one_enclosure)
+        if sts != 0:
+            error("unable to find connected devices for enclosure %s" % one_enclosure)
+        lines = out.splitlines()
+        # the first line is the enclosure name
+        enclosures[one_enclosure]["description"] = re.sub("\s+", ", ", lines[0].strip())
+        # then find all disks, they start with "Element index:"
+        enclosures[one_enclosure]["disks"] = {}
+        in_device_slots = False
+        for iline, line in enumerate(lines):
+            if "Element type: " in line:
+                in_device_slots = "Array device slot" in line
+            if not in_device_slots:
+                continue
+            if line.strip().startswith("Element index:"):
+                # find slot number and SAS-Address of this device
+                current_line = iline+1
+                new_dev = {"slot": None, "sas_address": None}
+                while not "Element index:" in lines[current_line]:
+                    m = re.search("device slot number: (\d+)", lines[current_line])
+                    if m is not None:
+                        new_dev["slot"] = int(m.group(1)) + 1
+                        new_dev["path"] = find_path(enclosures[one_enclosure]["scsi_tuple"], new_dev["slot"])
+                        new_dev["fault"] = int(get_file_content(os.path.join(new_dev["path"], "fault")))
+                        new_dev["locate"] = int(get_file_content(os.path.join(new_dev["path"], "locate")))
+                        new_dev["status"] = get_file_content(os.path.join(new_dev["path"], "status"))
+                    m = re.search("^SAS address: (\w+)", lines[current_line].strip())
+                    if m is not None:
+                        new_dev["sas_address"] = m.group(1)
+                        new_dev["dev_sd"] = sas_dev_sd[new_dev["sas_address"]]
+                        new_dev["scsi_id"] = dev_sd_scsi[new_dev["dev_sd"]]
+                    current_line += 1
+                # store the disk by slot, /dev/sd* and scsi_id
+                enclosures[one_enclosure]["disks"][new_dev["slot"]] = new_dev
+                enclosures[one_enclosure]["disks"][new_dev["dev_sd"]] = new_dev
+                enclosures[one_enclosure]["disks"][new_dev["scsi_id"]] = new_dev
+    return enclosures
+
+
+def find_path(enc, slot):
+    """
+    find the full path to the slot folder
+    :param enc:     scsi_tuple of the enclosure
+    :param slot:    number of the enclosure (starts with 1)
+    :return:        full path, or None
+    """
     name = str(slot)
     if os.path.isfile(os.path.join(CLASS, enc, name, 'type')):
         return os.path.join(CLASS, enc, name)
@@ -80,127 +130,190 @@ def find_name(enc, slot):
     return None
 
 
-def get_status(path):
-    '''
-        return status and block device name of given path
-        return touple:
-        (block device, fault, locate) or None if no slot found.
-        block device may be None (no block device) (or 'sd..')
-        fault may be None (no fault available) or 'FAULT_ON ', or 'fault_off'
-        locate may be None or 'LOCATE_ON ' or 'locate_off'
-    '''
+def get_file_content(path):
+    """
+    read the content of a file
+    :param path:
+    :return:
+    """
     try:
-        if not os.path.isfile(os.path.join(path, 'type')):
-            return None
-    except:
-        return None
-    try:
-        block = os.listdir(os.path.join(path, 'device', 'block'))[0]
-    except OSError:
-        block = '----'
-    try:
-        if int(file(os.path.join(path, 'fault'), 'r').readline().strip()):
-            fault = ' FAULT_ON'
-        else:
-            fault = 'fault_off'
-    except OSError:
-        fault = 'fault_N/A'
-    try:
-        if int(file(os.path.join(path, 'locate'), 'r').readline().strip()):
-            locate = ' LOCATE_ON'
-        else:
-            locate = 'locate_off'
-    except:
-            locate = 'locate_N/A'
-    return (block, fault, locate)
+        with open(path) as f:
+            return f.read().strip()
+    except IOError:
+        error("unable to read file %s" % path)
 
 
-def set_status(path, status):
-    '''
-        Set status for given path
-        status is 'fault' or 'locate' or 'off'
-    '''
+def find_disk(enclosures, key):
+    """
+    find a disk by a slot, a /dev/sd-name, or a scsi_id
+    :param enclosures:  enclosure structure created by scan_system
+    :param key:         slot, /dev/sd-name, or scsi_id
+    :return:
+    """
+    for enc_dev in sorted(enclosures.keys()):
+        one_enc = enclosures[enc_dev]
+        if key in one_enc["disks"]:
+            result = one_enc["disks"][key]
+            result["enclosure"] = enc_dev
+            return result
+    return None
+
+
+def cat_text_blocks(blocks, width=20, lines=3):
+    """
+    take multiline textblocks and concatinate them. Each block is a string with line breaks.
+    """
+    def splitlines(text):
+        result = text.splitlines()
+        while len(result) < lines:
+            result.append("-")
+        return result
+
+    blocks_in_lines = map(lambda x: splitlines(x), blocks)
+    result = []
+    for one_block in blocks_in_lines:
+        for i, line in enumerate(one_block):
+            if i >= len(result):
+                result.append("")
+            result[i] += ("%%-%ds" % width) % line
+    return "\n".join(result)
+
+
+def get_status_block_for_disk(one_disk):
+    """
+    returns a formatted text block for one disk
+    :param disk:    disk-dictionary created by scan_system
+    :return:
+    """
+    block = "Slot %d: %s\n" % (one_disk["slot"], one_disk["dev_sd"])
+    block += "%s\n" % one_disk["scsi_id"]
+    block += "Status=%s L=%d F=%d" % (one_disk["status"], one_disk["locate"], one_disk["fault"])
+    return block
+
+
+def set_single_disk_led(disk, status):
+    """
+    turn leds for disks on and off
+    :param disk:    the disk-dictionary from scan_system
+    :param status:  "locate", "fault", or "off"
+    :return:
+    """
     if status == 'fault':
-        file(os.path.join(path, 'fault'), 'w').write('1')
-    elif status == 'locate' or status == 'loc':
-        file(os.path.join(path, 'locate'), 'w').write('1')
+        with open(os.path.join(disk["path"], 'locate'), 'w') as f:
+            f.write('0')
+        with open(os.path.join(disk["path"], 'fault'), 'w') as f:
+            f.write('1')
+    elif status == 'locate':
+        with open(os.path.join(disk["path"], 'fault'), 'w') as f:
+            f.write('0')
+        with open(os.path.join(disk["path"], 'locate'), 'w') as f:
+            f.write('1')
     elif status == 'off':
-        file(os.path.join(path, 'fault'), 'w').write('0')
+        with open(os.path.join(disk["path"], 'locate'), 'w') as f:
+            f.write('0')
+        with open(os.path.join(disk["path"], 'fault'), 'w') as f:
+            f.write('0')
     else:
-        print("encled: Wrong status (%s)" % str(status))
-        return -1
+        error("Wrong status (%s)" % status)
 
 
-def print_status(enc, slot, status):
-    out = str(enc)+'/' + str(slot)+'\t'
-    if status:
-        out = out + str(status[0]) + '\t' + str(status[1]) + '\t' + str(status[2])
-    else:
-        out = out + '(Not available)'
-    out = out
-    print ("%s" % out)
+def set_leds(enclosures, arg_disk, status):
+    """
+    set for one or multiple disk the leds
+    :param enclosures:  enclosure structure created by scan_system
+    :param arg_disk:    disk-dictionary
+    :param status:      "locate", "fault", or "off"
+    :return:
+    """
+    # one disk, or everything?
+    if arg_disk is not None:
+        set_single_disk_led(arg_disk, status)
+        return
+
+    # loop over all enclosures
+    for enc_dev in sorted(enclosures.keys()):
+        one_enc = enclosures[enc_dev]
+        # loop over all disks
+        for one_disk_key in one_enc["disks"].keys():
+            if type(one_disk_key) != int:
+                continue
+            set_single_disk_led(one_enc["disks"][one_disk_key], status)
 
 
-def list_all():
-    devlist = []
-    for e in enc_list():
-        for s in slot_list(e):
-            path = find_name(e, s)
-            status = get_status(path)
-            devlist.append((e, s, path, status))
-    return devlist
+def show_status(enclosures, arg_disk):
+    """
+    create a formatted overview of the status
+    :param enclosures:  enclosure structure created by scan_system
+    :param arg_disk:    disk-dictionary
+    :return:
+    """
+    # one disk, or everything?
+    if arg_disk is not None:
+        print("Enclosure: %s (%s)" % (enclosures[arg_disk["enclosure"]]["description"], arg_disk["enclosure"]))
+        print(get_status_block_for_disk(arg_disk))
+        return
 
+    # loop over all enclosures
+    for enc_dev in sorted(enclosures.keys()):
+        one_enc = enclosures[enc_dev]
+        print("\nEnclosure: %s (%s)" % (one_enc["description"], enc_dev))
+        print("-" * 80)
 
-def main(argv):
-    if len(argv) > 1 and argv[1] in ('--help', '-h', '-help', '/?', '?', 'help', '-v', '--version', '-V'):
-        print (HELP)
-        return(0)
-
-    if not os.path.isdir(CLASS):
-        print("encled: Unable to find any enclosure device")
-        return(-1)
-
-    devlist = list_all()
-    if len(argv) < 2:
-        if not devlist:
-            print ("No enclosure devices found")
-            return(-1)
-        print ("ENCLOSURE/SLOT\tDEV\tFAULT_LED\tLOCATION_LED")
-        print ("-"*52)
-        for d in devlist:
-            print_status(d[0], d[1], d[3])
-        return(0)
-
-    if argv[1].upper() == 'ALL':
-        for d in devlist:
-            result = set_status(d[2], argv[2].lower())
-            if result: return(result)
-        return(0)
-
-    if 'sd' in argv[1] or '/dev' in argv[1]:
-        name = argv[1].lower().split('/')[-1]
-        for d in devlist:
-            if(d[3][0] == name):
-                dev = d
-                break
+        # create blocks of text for each slot
+        max_slot = max([i for i in one_enc["disks"].keys() if type(i) == int])
+        # guess the enclosure type from the number of disks
+        if max_slot > 24:
+            enc_type = "sm44"
         else:
-            print("encled: Unable to find device %s in enclosure slots. (note: on-board SATA ports are not supported)" % str(name))
-            return(-1)
+            enc_type = "sm24"
+        slot_blocks = numpy.empty(enclosure_layouts[enc_type].shape, dtype="U200")
+        for slot in range(1,max_slot+1):
+            if slot in one_enc["disks"]:
+                slot_blocks[enclosure_layouts[enc_type] == slot] = get_status_block_for_disk(one_enc["disks"][slot])
 
-    elif '/' in argv[1]:
-        (enc, slot) = argv[1].split('/')
-        path = find_name(enc, slot)
-        dev = (enc, slot, path, get_status(path))
-    else:
-        print ("encled: Incorrect enclosure/slot  or device syntax")
-        print (HELP)
-        return(-1)
-
-    if len(argv) < 3:
-        print_status(dev[0], dev[1], dev[3])
-    else:
-        set_status(dev[2], argv[2])
+        # arrange the blocks, six per row
+        rows = slot_blocks.shape[0]
+        for row in range(0, rows):
+            print(cat_text_blocks(slot_blocks[row, :]))
+            print()
 
 
-if __name__ == '__main__':
-    sys.exit(main(sys.argv))
+if __name__ == "__main__":
+    # set default log level
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    # parse command line arguments
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-e", "--enc", help="the enclosure of interest.")
+    parser.add_argument("-d", "--disk", help="the disk of interest.")
+    subparsers = parser.add_subparsers(dest='action', title='available operations')
+    sp_status = subparsers.add_parser("status", help="show the status of enclosures or disks")
+    sp_led = subparsers.add_parser("led", help="turn on/off the leds of a disk")
+    sp_led.add_argument("status", choices=["locate", "fault", "off"], help="select the led to turn on/off.")
+    args = parser.parse_args()
+
+    # is an operation selected?
+    if args.action is None:
+        error("no operation selected!")
+
+    # scan the system and create a mapping between device names and slots
+    encs = scan_system()
+
+    # check arguments
+    if args.enc is not None:
+        if args.enc not in encs:
+            error("Enclosure '%s' not found!" % args.enc)
+        else:
+            # remove other enclosures from the system informations
+            encs = {args.enc: encs[args.enc]}
+    if args.disk is not None:
+        disk_dev = find_disk(encs, args.disk)
+        if disk_dev is None:
+            error("Disk '%s' not found!" % args.disk)
+        args.disk = disk_dev
+
+    # perform requested operation
+    if args.action == "status":
+        show_status(encs, args.disk)
+    if args.action == "led":
+        set_leds(encs, args.disk, args.status)
