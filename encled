@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-encled - utility to change fault/location led for supermicro/LSI backplanes
+encled - SCSI Enclosure indicators (SES LED) control
 """
 import argparse
 import logging
@@ -278,18 +278,23 @@ def show_status(enclosures, arg_disk):
             print()
 
 
+def add_enc_disk_args(sp):
+    sp.add_argument("-e", "--enc", help="the enclosure of interest.")
+    sp.add_argument("-d", "--disk", help="the disk of interest.")
+
+
 if __name__ == "__main__":
     # set default log level
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     # parse command line arguments
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-e", "--enc", help="the enclosure of interest.")
-    parser.add_argument("-d", "--disk", help="the disk of interest.")
     subparsers = parser.add_subparsers(dest='action', title='available operations')
     sp_status = subparsers.add_parser("status", help="show the status of enclosures or disks")
     sp_led = subparsers.add_parser("led", help="turn on/off the leds of a disk")
     sp_led.add_argument("status", choices=["locate", "fault", "off"], help="select the led to turn on/off.")
+    add_enc_disk_args(sp_status)
+    add_enc_disk_args(sp_led)
     args = parser.parse_args()
 
     # is an operation selected?
