@@ -115,3 +115,48 @@ To locate one specific disk run:
     $ encled led --disk 35000cca01aa9437c locate
 
 The `--disk` flag understands the same arguments as it does within the `status` operation.
+
+
+### List
+`list` is intended to be used within other scripts. It can create lists of devices in formats other commands expect. 
+Currently `zpool create` and `pcs stonith create` are supported.
+
+    $ encled list --help
+    usage: encled list [-h] --type {zpool-create,fence-mpath}
+                       [--vdev-size VDEV_SIZE] [--vdev-type VDEV_TYPE]
+                       [--first-disk FIRST_DISK] [--last-disk LAST_DISK] [-e ENC]
+    
+    optional arguments:
+      -h, --help            show this help message and exit
+      --type {zpool-create,fence-mpath}
+                            select the type of device list to create.
+      --vdev-size VDEV_SIZE
+                            number of devices within one vdev.
+      --vdev-type VDEV_TYPE
+                            type to use in device list for zpool-create.
+      --first-disk FIRST_DISK
+                            Number between 1 and the total number of disks.
+      --last-disk LAST_DISK
+                            Number between 1 and the total number of disks.
+      -e ENC, --enc ENC     the enclosure of interest.
+
+Create a ZFS pool from all available disks:
+    
+    zpool create NAME_OF_POOL $(encled list --type zpool-create --vdev-size 6)
+    
+For a 24-disk-shelf, the command above results in:
+
+    zpool create NAME_OF_POOL raidz2 35000cca01aab63e4 35000cca01aaaeb18 35000cca01aaaeccc 35000cca01aab559c 35000cca01aa9aa58 35000cca01aa9b2b0 raidz2 35000cca01aaaeaa4 35000cca01aa9437c 35000cca01aab56c8 35000cca01aaae048 35000cca01aab5ec0 35000cca01aab4818 raidz2 35000cca01aab4434 35000cca01aa71a80 35000cca01aa6e7cc 35000cca01aab558c 35000cca01aab110c 35000cca01aab0be0 raidz2 35000cca01aab48e4 35000cca01aab4838 35000cca01aa79c10 35000cca01aa8b2e8 35000cca01aa9a830 35000cca01aaaa01c
+    
+It is also possible to use only a part of a shelf:
+
+    zpool create NAME_OF_POOL $(encled list --type zpool-create --vdev-size 6 --first-disk 1 --last-disk 6)
+    
+`--type zpool-create` makes use of the SCSI-ID of the disks. The `--type fence-mpath` makes use of the devices listed 
+in `/dev/mapper`:
+
+    pcs stonith create NAME_OF_FENCE fence_mpath pcmk_host_list=HOSTNAME key=RESERVATION_KEY devices="$(encled list --type fence-mpath)" meta provides=unfencing
+
+The command above expands to something like:
+
+    pcs stonith create NAME_OF_FENCE fence_mpath pcmk_host_list=HOSTNAME key=RESERVATION_KEY devices="/dev/mapper/35000cca01aab63e4,/dev/mapper/35000cca01aaaeb18,/dev/mapper/35000cca01aaaeccc,/dev/mapper/35000cca01aab559c,/dev/mapper/35000cca01aa9aa58,/dev/mapper/35000cca01aa9b2b0,/dev/mapper/35000cca01aaaeaa4,/dev/mapper/35000cca01aa9437c,/dev/mapper/35000cca01aab56c8,/dev/mapper/35000cca01aaae048,/dev/mapper/35000cca01aab5ec0,/dev/mapper/35000cca01aab4818,/dev/mapper/35000cca01aab4434,/dev/mapper/35000cca01aa71a80,/dev/mapper/35000cca01aa6e7cc,/dev/mapper/35000cca01aab558c,/dev/mapper/35000cca01aab110c,/dev/mapper/35000cca01aab0be0,/dev/mapper/35000cca01aab48e4,/dev/mapper/35000cca01aab4838,/dev/mapper/35000cca01aa79c10,/dev/mapper/35000cca01aa8b2e8,/dev/mapper/35000cca01aa9a830,/dev/mapper/35000cca01aaaa01c" meta provides=unfencing

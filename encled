@@ -278,9 +278,59 @@ def show_status(enclosures, arg_disk):
             print()
 
 
-def add_enc_disk_args(sp):
-    sp.add_argument("-e", "--enc", help="the enclosure of interest.")
-    sp.add_argument("-d", "--disk", help="the disk of interest.")
+def create_device_list(enclosures, args):
+    """
+    create a list of devices usable in other commands
+    :param enclosures:  enclosure structure created by scan_system
+    :param args:        the command line arguments
+    """
+
+    result = []
+    vdevs = [[args.vdev_type]]
+    # loop over all enclosures
+    for enc_dev in sorted(enclosures.keys()):
+        one_enc = enclosures[enc_dev]
+
+        # get the number of slots in this enclosure
+        max_slot = max([i for i in one_enc["disks"].keys() if type(i) == int])
+
+        # loop over all devices
+        disk_number = 0
+        for slot in range(1,max_slot+1):
+            if slot in one_enc["disks"]:
+                # include this disk?
+                disk_number += 1
+                if args.first_disk is not None and disk_number < args.first_disk:
+                    continue
+                if args.last_disk is not None and disk_number > args.last_disk:
+                    continue
+
+                # create list of devices in proper format
+                if args.type == "fence-mpath":
+                    result.append("/dev/mapper/%s" % one_enc["disks"][slot]["scsi_id"])
+                if args.type == "zpool-create":
+                    if len(vdevs[-1]) < args.vdev_size +1:
+                        vdevs[-1].append(one_enc["disks"][slot]["scsi_id"])
+                    else:
+                        vdevs.append([args.vdev_type, one_enc["disks"][slot]["scsi_id"]])
+
+        # print the final list
+        if args.type == "fence-mpath":
+            print(",".join(result))
+        if args.type == "zpool-create":
+            # check length of vdevs
+            for i in range(0, len(vdevs)):
+                if len(vdevs[i]) != args.vdev_size +1:
+                    error("wrong number of disks in vdev. Use --vdev-size!")
+            vdevs = map(lambda x: " ".join(x), vdevs)
+            print(" ".join(vdevs))
+
+
+def add_enc_disk_args(sp, add_enc=True, add_disk=True):
+    if add_enc:
+        sp.add_argument("-e", "--enc", help="the enclosure of interest.")
+    if add_disk:
+        sp.add_argument("-d", "--disk", help="the disk of interest.")
 
 
 if __name__ == "__main__":
@@ -293,8 +343,15 @@ if __name__ == "__main__":
     sp_status = subparsers.add_parser("status", help="show the status of enclosures or disks")
     sp_led = subparsers.add_parser("led", help="turn on/off the leds of a disk")
     sp_led.add_argument("status", choices=["locate", "fault", "off"], help="select the led to turn on/off.")
+    sp_list = subparsers.add_parser("list", help="list devices in different formats")
+    sp_list.add_argument("--type", choices=["zpool-create", "fence-mpath"], required=True, help="select the type of device list to create.")
+    sp_list.add_argument("--vdev-size", type=int, default=6, help="number of devices within one vdev.")
+    sp_list.add_argument("--vdev-type", default="raidz2", help="type to use in device list for zpool-create.")
+    sp_list.add_argument("--first-disk", type=int, help="Number between 1 and the total number of disks.")
+    sp_list.add_argument("--last-disk", type=int, help="Number between 1 and the total number of disks.")
     add_enc_disk_args(sp_status)
     add_enc_disk_args(sp_led)
+    add_enc_disk_args(sp_list, add_disk=False)
     args = parser.parse_args()
 
     # is an operation selected?
@@ -311,7 +368,7 @@ if __name__ == "__main__":
         else:
             # remove other enclosures from the system informations
             encs = {args.enc: encs[args.enc]}
-    if args.disk is not None:
+    if "disk" in args and args.disk is not None:
         disk_dev = find_disk(encs, args.disk)
         if disk_dev is None:
             error("Disk '%s' not found!" % args.disk)
@@ -322,3 +379,5 @@ if __name__ == "__main__":
         show_status(encs, args.disk)
     if args.action == "led":
         set_leds(encs, args.disk, args.status)
+    if args.action == "list":
+        create_device_list(encs, args)
