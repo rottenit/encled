@@ -115,6 +115,8 @@ def scan_system():
                         new_dev["fault"] = int(get_file_content(os.path.join(new_dev["path"], "fault")))
                         new_dev["locate"] = int(get_file_content(os.path.join(new_dev["path"], "locate")))
                         new_dev["status"] = get_file_content(os.path.join(new_dev["path"], "status"))
+                        if new_dev["status"] == "not installed":
+                            new_dev["status"] = "NI"
                     m = re.search("^SAS address: (\w+)", lines[current_line].strip())
                     if m is not None and m.group(1) != "0x0000000000000000":
                         new_dev["sas_address"] = m.group(1)
@@ -123,10 +125,14 @@ def scan_system():
                         new_dev["size"] = dev_sd_size[new_dev["dev_sd"]]
                     current_line += 1
                 # store the disk by slot, /dev/sd* and scsi_id
+                enclosures[one_enclosure]["disks"][new_dev["slot"]] = new_dev
                 if new_dev["sas_address"] is not None:
-                    enclosures[one_enclosure]["disks"][new_dev["slot"]] = new_dev
                     enclosures[one_enclosure]["disks"][new_dev["dev_sd"]] = new_dev
                     enclosures[one_enclosure]["disks"][new_dev["scsi_id"]] = new_dev
+                else:
+                    new_dev["dev_sd"] = ""
+                    new_dev["scsi_id"] = ""
+                    new_dev["size"] = ""
     return enclosures
 
 
@@ -214,7 +220,10 @@ def get_status_block_for_disk(one_disk):
     """
     block = "Slot %d: %s\n" % (one_disk["slot"], one_disk["dev_sd"])
     block += "%s\n" % one_disk["scsi_id"]
-    block += "Size=%s\n" % one_disk["size"]
+    if one_disk["status"] != "NI":
+        block += "Size=%s\n" % one_disk["size"]
+    else:
+        block += "\n"
     block += "Status=%s L=%d F=%d" % (one_disk["status"], one_disk["locate"], one_disk["fault"])
     return block
 
@@ -382,6 +391,7 @@ def add_enc_disk_args(sp, add_enc=True, add_disk=True):
         sp.add_argument("-e", "--enc", help="the enclosure of interest.")
     if add_disk:
         sp.add_argument("-d", "--disk", help="the disk of interest.")
+        sp.add_argument("-s", "--slot", type=int, help="the slot of interest.")
 
 
 if __name__ == "__main__":
@@ -426,6 +436,11 @@ if __name__ == "__main__":
         disk_dev = find_disk(encs, args.disk)
         if disk_dev is None:
             error("Disk '%s' not found!" % args.disk)
+        args.disk = disk_dev
+    if "slot" in args and args.slot is not None:
+        disk_dev = find_disk(encs, args.slot)
+        if disk_dev is None:
+            error("Slot '%s' not found!" % args.slot)
         args.disk = disk_dev
 
     # perform requested operation
