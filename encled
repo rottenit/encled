@@ -360,16 +360,16 @@ def create_device_list(enclosures, args):
                     else:
                         vdevs.append([args.vdev_type, one_enc["disks"][slot]["scsi_id"]])
 
-        # print the final list
-        if args.type == "fence-mpath":
-            print(",".join(result))
-        if args.type == "zpool-create":
-            # check length of vdevs
-            for i in range(0, len(vdevs)):
-                if len(vdevs[i]) != args.vdev_size +1:
-                    error("wrong number of disks in vdev. Use --vdev-size!")
-            vdevs = map(lambda x: " ".join(x), vdevs)
-            print(" ".join(vdevs))
+    # print the final list
+    if args.type == "fence-mpath":
+        print(",".join(result))
+    if args.type == "zpool-create":
+        # check length of vdevs
+        for i in range(0, len(vdevs)):
+            if len(vdevs[i]) != args.vdev_size +1:
+                error("wrong number of disks in vdev. Use --vdev-size!")
+        vdevs = map(lambda x: " ".join(x), vdevs)
+        print(" ".join(vdevs))
 
 
 def check_defaults():
