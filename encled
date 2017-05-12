@@ -9,11 +9,21 @@ import re
 import os
 import numpy
 
-CLASS = '/sys/class/enclosure/'
-SLOT = 'Slot '  # with space
+# default settings
+defaults = {
+    "CLASS":        "/sys/class/enclosure/",
+    "SLOT":         None,
+    "first_slot":   1
+}
 
 # define layouts for enclosures
-enclosure_layouts = {"sm24": numpy.array([[6, 12, 18, 24],
+enclosure_layouts = {"sm20": numpy.array([[0, 8, 14, 20],
+                                          [0, 7, 13, 19],
+                                          [0, 6, 12, 18],
+                                          [0, 5, 11, 17],
+                                          [2, 4, 10, 16],
+                                          [1, 3, 9, 15]]),
+                     "sm24": numpy.array([[6, 12, 18, 24],
                                           [5, 11, 17, 23],
                                           [4, 10, 16, 22],
                                           [3, 9, 15, 21],
@@ -61,17 +71,24 @@ def scan_system():
     # create a mapping between the /dev/sd* devices and sas addresses
     sas_dev_sd = {}
     dev_sd_scsi = {}
-    sts, out = subprocess.getstatusoutput("lsscsi -t -i")
+    dev_sd_size = {}
+    sts, out = subprocess.getstatusoutput("lsscsi -t -i -s")
     if sts != 0:
         error("unable to list scsi devices!")
     for line in out.splitlines():
         words = line.split()
         if words[1] == "disk" and words[2].startswith("sas:"):
-            sas_dev_sd[words[2].replace("sas:", "")] = words[-2]
-            dev_sd_scsi[words[-2]] = words[-1]
+            sas_dev_sd[words[2].replace("sas:", "")] = words[-3]
+            dev_sd_scsi[words[-3]] = words[-2]
+            dev_sd_size[words[-3]] = words[-1]
 
     # loop over all enclosures to find all connected devices
     for one_enclosure in enclosures.keys():
+        # at first count the slots
+        enc_path = find_path(enclosures[one_enclosure]["scsi_tuple"], -1)
+        slot_dirs = [one_dir for one_dir in os.listdir(enc_path) if defaults["SLOT"] in one_dir]
+        enclosures[one_enclosure]["n_slots"] = len(slot_dirs)
+        # then go through information provided by sg_ses
         sts, out = subprocess.getstatusoutput("sg_ses -p 0xa %s" % one_enclosure)
         if sts != 0:
             error("unable to find connected devices for enclosure %s" % one_enclosure)
@@ -90,7 +107,7 @@ def scan_system():
                 # find slot number and SAS-Address of this device
                 current_line = iline+1
                 new_dev = {"slot": None, "sas_address": None}
-                while not "Element index:" in lines[current_line]:
+                while current_line < len(lines) and not "Element index:" in lines[current_line]:
                     m = re.search("device slot number: (\d+)", lines[current_line])
                     if m is not None:
                         new_dev["slot"] = int(m.group(1)) + 1
@@ -99,15 +116,17 @@ def scan_system():
                         new_dev["locate"] = int(get_file_content(os.path.join(new_dev["path"], "locate")))
                         new_dev["status"] = get_file_content(os.path.join(new_dev["path"], "status"))
                     m = re.search("^SAS address: (\w+)", lines[current_line].strip())
-                    if m is not None:
+                    if m is not None and m.group(1) != "0x0000000000000000":
                         new_dev["sas_address"] = m.group(1)
                         new_dev["dev_sd"] = sas_dev_sd[new_dev["sas_address"]]
                         new_dev["scsi_id"] = dev_sd_scsi[new_dev["dev_sd"]]
+                        new_dev["size"] = dev_sd_size[new_dev["dev_sd"]]
                     current_line += 1
                 # store the disk by slot, /dev/sd* and scsi_id
-                enclosures[one_enclosure]["disks"][new_dev["slot"]] = new_dev
-                enclosures[one_enclosure]["disks"][new_dev["dev_sd"]] = new_dev
-                enclosures[one_enclosure]["disks"][new_dev["scsi_id"]] = new_dev
+                if new_dev["sas_address"] is not None:
+                    enclosures[one_enclosure]["disks"][new_dev["slot"]] = new_dev
+                    enclosures[one_enclosure]["disks"][new_dev["dev_sd"]] = new_dev
+                    enclosures[one_enclosure]["disks"][new_dev["scsi_id"]] = new_dev
     return enclosures
 
 
@@ -115,17 +134,25 @@ def find_path(enc, slot):
     """
     find the full path to the slot folder
     :param enc:     scsi_tuple of the enclosure
-    :param slot:    number of the enclosure (starts with 1)
+    :param slot:    number of the slot (starts with 1), use -1 to the the path of the enclosure
     :return:        full path, or None
     """
+    if slot == -1:
+        result = os.path.join(defaults["CLASS"], enc)
+        if os.path.isdir(result):
+            return result
+        else:
+            return None
+    if defaults["first_slot"] == 0:
+        slot -= 1
     name = str(slot)
-    if os.path.isfile(os.path.join(CLASS, enc, name, 'type')):
-        return os.path.join(CLASS, enc, name)
+    if os.path.isfile(os.path.join(defaults["CLASS"], enc, name, 'type')):
+        return os.path.join(defaults["CLASS"], enc, name)
     for z in range(0, 4):
-        if os.path.isfile(os.path.join(CLASS, enc, SLOT + name, 'type')):  # naming type 'Slot 01'
-            return os.path.join(CLASS, enc, SLOT + name)
-        if os.path.isfile(os.path.join(CLASS, enc, name, 'type')):  # naming type '001'
-            return os.path.join(CLASS, enc, name)
+        if os.path.isfile(os.path.join(defaults["CLASS"], enc, defaults["SLOT"] + name, 'type')):  # naming type 'Slot 01'
+            return os.path.join(defaults["CLASS"], enc, defaults["SLOT"] + name)
+        if os.path.isfile(os.path.join(defaults["CLASS"], enc, name, 'type')):  # naming type '001'
+            return os.path.join(defaults["CLASS"], enc, name)
         name = '0' + name  # try same name with more zeroes at front
     return None
 
@@ -159,7 +186,7 @@ def find_disk(enclosures, key):
     return None
 
 
-def cat_text_blocks(blocks, width=20, lines=3):
+def cat_text_blocks(blocks, width=20, lines=4):
     """
     take multiline textblocks and concatinate them. Each block is a string with line breaks.
     """
@@ -187,6 +214,7 @@ def get_status_block_for_disk(one_disk):
     """
     block = "Slot %d: %s\n" % (one_disk["slot"], one_disk["dev_sd"])
     block += "%s\n" % one_disk["scsi_id"]
+    block += "Size=%s\n" % one_disk["size"]
     block += "Status=%s L=%d F=%d" % (one_disk["status"], one_disk["locate"], one_disk["fault"])
     return block
 
@@ -253,21 +281,30 @@ def show_status(enclosures, arg_disk):
         print(get_status_block_for_disk(arg_disk))
         return
 
+    # sort enclosures by their /dev/sg-number
+    enc_devs = enclosures.keys()
+    enc_devs_sortable = {}
+    for one_key in enc_devs:
+        enc_devs_sortable[int(one_key.replace("/dev/sg", ""))] = one_key
+
     # loop over all enclosures
-    for enc_dev in sorted(enclosures.keys()):
+    for enc_dev in sorted(enc_devs_sortable.keys()):
+        enc_dev = enc_devs_sortable[enc_dev]
         one_enc = enclosures[enc_dev]
         print("\nEnclosure: %s (%s)" % (one_enc["description"], enc_dev))
         print("-" * 80)
 
         # create blocks of text for each slot
-        max_slot = max([i for i in one_enc["disks"].keys() if type(i) == int])
+        n_slot = one_enc["n_slots"]
         # guess the enclosure type from the number of disks
-        if max_slot > 24:
-            enc_type = "sm44"
-        else:
+        if n_slot == 20:
+            enc_type = "sm20"
+        elif n_slot == 24:
             enc_type = "sm24"
+        else:
+            enc_type = "sm44"
         slot_blocks = numpy.empty(enclosure_layouts[enc_type].shape, dtype="U200")
-        for slot in range(1,max_slot+1):
+        for slot in range(1,n_slot+1):
             if slot in one_enc["disks"]:
                 slot_blocks[enclosure_layouts[enc_type] == slot] = get_status_block_for_disk(one_enc["disks"][slot])
 
@@ -326,6 +363,20 @@ def create_device_list(enclosures, args):
             print(" ".join(vdevs))
 
 
+def check_defaults():
+    """
+    check the default path of slots and enclosures
+    """
+    enclosures = os.listdir(defaults["CLASS"])
+    entries = os.listdir(os.path.join(defaults["CLASS"], enclosures[0]))
+    # slots are counted from 0 or from 1?
+    if "Slot00" in entries or "Slot 00" in entries or "Slot000" in entries or "Slot 000" in entries:
+        defaults["first_slot"] = 0
+    # Slot names include space or not
+    if "Slot01" in entries or "Slot001" in entries:
+        defaults["SLOT"] = "Slot"
+
+
 def add_enc_disk_args(sp, add_enc=True, add_disk=True):
     if add_enc:
         sp.add_argument("-e", "--enc", help="the enclosure of interest.")
@@ -357,6 +408,9 @@ if __name__ == "__main__":
     # is an operation selected?
     if args.action is None:
         error("no operation selected!")
+
+    # check the default settings
+    check_defaults()
 
     # scan the system and create a mapping between device names and slots
     encs = scan_system()
