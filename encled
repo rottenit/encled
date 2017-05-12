@@ -333,6 +333,8 @@ def create_device_list(enclosures, args):
 
     result = []
     vdevs = [[args.vdev_type]]
+    disk_size = None
+    disk_number = 0
     # loop over all enclosures
     for enc_dev in sorted(enclosures.keys()):
         one_enc = enclosures[enc_dev]
@@ -341,7 +343,6 @@ def create_device_list(enclosures, args):
         max_slot = max([i for i in one_enc["disks"].keys() if type(i) == int])
 
         # loop over all devices
-        disk_number = 0
         for slot in range(1,max_slot+1):
             if slot in one_enc["disks"]:
                 # include this disk?
@@ -350,6 +351,14 @@ def create_device_list(enclosures, args):
                     continue
                 if args.last_disk is not None and disk_number > args.last_disk:
                     continue
+
+                # has this disk the correct size?
+                if args.size is not None and one_enc["disks"][slot]["size"] != args.size:
+                    continue
+                if disk_size is None:
+                    disk_size = one_enc["disks"][slot]["size"]
+                elif disk_size != one_enc["disks"][slot]["size"]:
+                    error("Disks of different size within the same pool: %s and %s!" % (disk_size, one_enc["disks"][slot]["size"]))
 
                 # create list of devices in proper format
                 if args.type == "fence-mpath":
@@ -410,6 +419,7 @@ if __name__ == "__main__":
     sp_list.add_argument("--vdev-type", default="raidz2", help="type to use in device list for zpool-create.")
     sp_list.add_argument("--first-disk", type=int, help="Number between 1 and the total number of disks.")
     sp_list.add_argument("--last-disk", type=int, help="Number between 1 and the total number of disks.")
+    sp_list.add_argument("--size", help="Size of disk to be included (same format as in status).")
     add_enc_disk_args(sp_status)
     add_enc_disk_args(sp_led)
     add_enc_disk_args(sp_list, add_disk=False)
