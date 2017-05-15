@@ -208,7 +208,10 @@ def cat_text_blocks(blocks, width=20, lines=4):
         for i, line in enumerate(one_block):
             if i >= len(result):
                 result.append("")
-            result[i] += ("%%-%ds" % width) % line
+            if "\033" in line:
+                result[i] += ("%%-%ds" % (width + 13)) % line
+            else:
+                result[i] += ("%%-%ds" % width) % line
     return "\n".join(result)
 
 
@@ -218,13 +221,20 @@ def get_status_block_for_disk(one_disk):
     :param disk:    disk-dictionary created by scan_system
     :return:
     """
-    block = "Slot %d: %s\n" % (one_disk["slot"], one_disk["dev_sd"])
-    block += "%s\n" % one_disk["scsi_id"]
+    # highlight block by red colored text
+    if one_disk["locate"] != 0 or one_disk["fault"] != 0:
+        prefix = "\033[1;31m"
+        suffix = "\033[0;0m"
+    else:
+        prefix = ""
+        suffix = ""
+    block = "%sSlot %d: %s%s\n" % (prefix, one_disk["slot"], one_disk["dev_sd"], suffix)
+    block += "%s%s%s\n" % (prefix, one_disk["scsi_id"], suffix)
     if one_disk["status"] != "NI":
-        block += "Size=%s\n" % one_disk["size"]
+        block += "%sSize=%s%s\n" % (prefix, one_disk["size"], suffix)
     else:
         block += "\n"
-    block += "Status=%s L=%d F=%d" % (one_disk["status"], one_disk["locate"], one_disk["fault"])
+    block += "%sStatus=%s L=%d F=%d%s" % (prefix, one_disk["status"], one_disk["locate"], one_disk["fault"], suffix)
     return block
 
 
@@ -254,6 +264,25 @@ def set_single_disk_led(disk, status):
         error("Wrong status (%s)" % status)
 
 
+def check_zpool_status():
+    """
+    :return:    a dictionary with all disks used within any connected zpool. The key is the device identifier used by
+                the zpool, the value is the zfs status of the disk.
+    """
+    sts, out = subprocess.getstatusoutput("zpool status")
+    if sts != 0:
+        error("unable to check the zfs pool status:\n %s" % out)
+    # parse the output to get the disk state
+    result = {}
+    for line in out.splitlines():
+        if line.startswith("\t    "):
+            words = line.split()
+            if len(words) < 5:
+                continue
+            result[words[0]] = words[1]
+    return result
+
+
 def set_leds(enclosures, arg_disk, status):
     """
     set for one or multiple disk the leds
@@ -262,6 +291,17 @@ def set_leds(enclosures, arg_disk, status):
     :param status:      "locate", "fault", or "off"
     :return:
     """
+    # is the requested operation auto-zpool? check the disk-status with the zpool command
+    if status == "auto-zpool":
+        pool_disks_status = check_zpool_status()
+        for dev_key, dev_status in pool_disks_status.items():
+            one_disk = find_disk(enclosures, dev_key)
+            if dev_status != "ONLINE":
+                set_single_disk_led(one_disk, "fault")
+            else:
+                set_single_disk_led(one_disk, "off")
+        return
+
     # one disk, or everything?
     if arg_disk is not None:
         set_single_disk_led(arg_disk, status)
@@ -412,7 +452,7 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest='action', title='available operations')
     sp_status = subparsers.add_parser("status", help="show the status of enclosures or disks")
     sp_led = subparsers.add_parser("led", help="turn on/off the leds of a disk")
-    sp_led.add_argument("status", choices=["locate", "fault", "off"], help="select the led to turn on/off.")
+    sp_led.add_argument("status", choices=["locate", "fault", "off", "auto-zpool"], help="select the led to turn on/off.")
     sp_list = subparsers.add_parser("list", help="list devices in different formats")
     sp_list.add_argument("--type", choices=["zpool-create", "fence-mpath"], required=True, help="select the type of device list to create.")
     sp_list.add_argument("--vdev-size", type=int, default=6, help="number of devices within one vdev.")
