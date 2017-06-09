@@ -457,6 +457,8 @@ def check_defaults():
     # Slot names include space or not
     if "Slot01" in entries or "Slot001" in entries:
         defaults["SLOT"] = "Slot"
+    if "Slot 01" in entries or "Slot 001" in entries:
+        defaults["SLOT"] = "Slot "
 
 
 def add_enc_disk_args(sp, add_enc=True, add_disk=True):
