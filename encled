@@ -120,9 +120,18 @@ def scan_system():
                     m = re.search("^SAS address: (\w+)", lines[current_line].strip())
                     if m is not None and m.group(1) != "0x0000000000000000":
                         new_dev["sas_address"] = m.group(1)
-                        new_dev["dev_sd"] = sas_dev_sd[new_dev["sas_address"]]
-                        new_dev["scsi_id"] = dev_sd_scsi[new_dev["dev_sd"]]
-                        new_dev["size"] = dev_sd_size[new_dev["dev_sd"]]
+                        if new_dev["sas_address"] in sas_dev_sd:
+                            new_dev["dev_sd"] = sas_dev_sd[new_dev["sas_address"]]
+                        else:
+                            new_dev["dev_sd"] = "unknown"
+                        if new_dev["dev_sd"] in dev_sd_scsi:
+                            new_dev["scsi_id"] = dev_sd_scsi[new_dev["dev_sd"]]
+                        else:
+                            new_dev["scsi_id"] = "unknown"
+                        if new_dev["dev_sd"] in dev_sd_size:
+                            new_dev["size"] = dev_sd_size[new_dev["dev_sd"]]
+                        else:
+                            new_dev["size"] = "unknown"
                     current_line += 1
                 # store the disk by slot, /dev/sd* and scsi_id
                 enclosures[one_enclosure]["disks"][new_dev["slot"]] = new_dev
