@@ -472,7 +472,7 @@ def check_defaults():
 
 def add_enc_disk_args(sp, add_enc=True, add_disk=True):
     if add_enc:
-        sp.add_argument("-e", "--enc", help="the enclosure of interest.")
+        sp.add_argument("-e", "--enc", nargs='+', help="the enclosure of interest.")
     if add_disk:
         sp.add_argument("-d", "--disk", help="the disk of interest.")
         sp.add_argument("-s", "--slot", type=int, help="the slot of interest.")
@@ -513,11 +513,14 @@ if __name__ == "__main__":
 
     # check arguments
     if args.enc is not None:
-        if args.enc not in encs:
-            error("Enclosure '%s' not found!" % args.enc)
-        else:
-            # remove other enclosures from the system informations
-            encs = {args.enc: encs[args.enc]}
+        encs_filtered = {}
+        for one_enc in args.enc:
+            if one_enc not in encs:
+                error("Enclosure '%s' not found!" % args.enc)
+            else:
+                # add this enclosure to filtered list
+                encs_filtered[one_enc] = encs[one_enc]
+        encs = encs_filtered
     if "disk" in args and args.disk is not None:
         disk_dev = find_disk(encs, args.disk)
         if disk_dev is None:
