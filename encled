@@ -17,7 +17,10 @@ defaults = {
 }
 
 # define layouts for enclosures
-enclosure_layouts = {"sm20": numpy.array([[0, 8, 14, 20],
+enclosure_layouts = {"sm12": numpy.array([[3, 6, 9, 12],
+                                          [2, 5, 8, 11],
+                                          [1, 4, 7, 10]]),
+                     "sm20": numpy.array([[0, 8, 14, 20],
                                           [0, 7, 13, 19],
                                           [0, 6, 12, 18],
                                           [0, 5, 11, 17],
@@ -355,7 +358,9 @@ def show_status(enclosures, arg_disk):
         # create blocks of text for each slot
         n_slot = one_enc["n_slots"]
         # guess the enclosure type from the number of disks
-        if n_slot == 20:
+        if n_slot == 12:
+            enc_type = "sm12"
+        elif n_slot == 20:
             enc_type = "sm20"
         elif n_slot == 24:
             enc_type = "sm24"
