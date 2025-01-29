@@ -1,3 +1,4 @@
+Forked from: https://github.com/r5r3/encled
 # encled - SCSI Enclosure indicators (SES LED) control
 
 This utility can be used to turn the fault/location leds of an external disk enclosure on and off. The script was tested
